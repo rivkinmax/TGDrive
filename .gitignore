@@ -1,0 +1,7 @@
+bin/
+obj/
+publish/
+*.dll
+*.user
+.vs/
+input.txt
