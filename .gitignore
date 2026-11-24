@@ -5,4 +5,4 @@ publish/
 *.dll
 *.user
 .vs/
-input.txt
+input.txtdata/
