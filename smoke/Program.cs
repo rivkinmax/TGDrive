@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -13,20 +12,14 @@ internal static class Program
     private const string KeysPath = @"c:\work\TGDrive\input.txt";
     private const string DbDir = @"c:\work\TGDrive\data\td";
     private const string FilesDir = @"c:\work\TGDrive\data\files";
-    private const string TestDataDir = @"c:\work\TGDrive\data";
     private const long TargetChatId = -1004366704743;
-    private const string TestFileName = "test_upload.txt";
-    private const string TestFileContent = "Hello TGDrive smoke test!";
 
     [DllImport("tdjson", CallingConvention = CallingConvention.Cdecl)]
     private static extern int td_create_client_id();
-
     [DllImport("tdjson", CallingConvention = CallingConvention.Cdecl)]
     private static extern void td_send(int clientId, IntPtr request);
-
     [DllImport("tdjson", CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr td_receive(double timeout);
-
     [DllImport("tdjson", CallingConvention = CallingConvention.Cdecl)]
     private static extern void td_set_log_verbosity_level(int level);
 
@@ -57,15 +50,12 @@ internal static class Program
             throw new FileNotFoundException("Keys file not found: " + KeysPath);
 
         var result = new Keys();
-
         foreach (var rawLine in File.ReadAllLines(KeysPath))
         {
             var line = rawLine.Trim();
             if (line.Length == 0 || line.StartsWith("#")) continue;
-
             var eq = line.IndexOf('=');
             if (eq < 0) continue;
-
             var key = line.Substring(0, eq).Trim().ToLowerInvariant().Replace("_", "");
             var value = line.Substring(eq + 1).Trim().Trim('"');
             if (value.Length == 0) continue;
@@ -81,16 +71,7 @@ internal static class Program
 
         if (result.ApiId.Length == 0) throw new InvalidDataException("api_id not found in " + KeysPath);
         if (result.ApiHash.Length == 0) throw new InvalidDataException("api_hash not found in " + KeysPath);
-
         return result;
-    }
-
-    private static string ComputeSha256(string filePath)
-    {
-        using var sha256 = SHA256.Create();
-        using var stream = File.OpenRead(filePath);
-        var hash = sha256.ComputeHash(stream);
-        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
     }
 
     private static readonly HashSet<string> Noise = new(StringComparer.Ordinal)
@@ -118,16 +99,16 @@ internal static class Program
     private enum State
     {
         Init,
-        Ready,
-        WaitingSendResult,
-        WaitingDownloadResult,
+        WaitingChat,
+        WaitingSupergroup,
+        WaitingFullInfo,
         Closing
     }
 
     private static int Main()
     {
         td_set_log_verbosity_level(0);
-        Console.WriteLine("TDLib smoke test. Keys: " + KeysPath);
+        Console.WriteLine("TDLib R2 check. Keys: " + KeysPath);
 
         var keys = ReadKeys();
         if (!int.TryParse(keys.ApiId, out var apiId))
@@ -144,20 +125,9 @@ internal static class Program
             Console.WriteLine("FAIL: empty phone number.");
             return 1;
         }
-        Console.WriteLine("Phone source: " + (keys.PhoneNumber != null ? "input.txt" : "console"));
 
         Directory.CreateDirectory(DbDir);
         Directory.CreateDirectory(FilesDir);
-        Directory.CreateDirectory(TestDataDir);
-
-        var testFilePath = Path.Combine(TestDataDir, TestFileName);
-        File.WriteAllText(testFilePath, TestFileContent, Encoding.UTF8);
-        var originalHash = ComputeSha256(testFilePath);
-        Console.WriteLine("Created test file: " + testFilePath);
-        Console.WriteLine("Original SHA256: " + originalHash);
-
-        Console.WriteLine("TDLib database: " + DbDir);
-        Console.WriteLine("TDLib files:    " + FilesDir);
 
         var clientId = td_create_client_id();
 
@@ -180,11 +150,14 @@ internal static class Program
             ["application_version"] = "0.1.0-smoke"
         });
 
-        Console.WriteLine("Waiting for authorization state...");
-
+        Console.WriteLine("Waiting for authorization...");
         var deadline = DateTime.UtcNow.AddSeconds(300);
         var state = State.Init;
         var exitCode = 1;
+        long supergroupId = 0;
+        string? supergroupUsernames = null;
+        string? supergroupStatus = null;
+        bool? canPost = null, canEdit = null, canDelete = null;
 
         while (DateTime.UtcNow < deadline)
         {
@@ -202,12 +175,9 @@ internal static class Program
             {
                 Console.WriteLine("TDLIB ERROR " + root.GetProperty("code").GetInt32()
                                   + " (extra=" + extra + "): " + root.GetProperty("message").GetString());
-                if (extra == "send_msg" || extra == "download_file")
-                {
-                    exitCode = 2;
-                    Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
-                    state = State.Closing;
-                }
+                exitCode = 2;
+                Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
+                state = State.Closing;
                 continue;
             }
 
@@ -222,7 +192,6 @@ internal static class Program
                         break;
 
                     case "authorizationStateWaitPhoneNumber":
-                        Console.WriteLine("Sending phone number...");
                         Send(clientId, new Dictionary<string, object>
                         {
                             ["@type"] = "setAuthenticationPhoneNumber",
@@ -239,16 +208,14 @@ internal static class Program
                         break;
 
                     case "authorizationStateWaitCode":
-                        Console.Write("Enter confirmation code (code is not logged): ");
+                        Console.Write("Enter code: ");
                         var code = Console.ReadLine()?.Trim();
                         if (string.IsNullOrWhiteSpace(code))
                         {
-                            Console.WriteLine("FAIL: empty code.");
                             Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
                             state = State.Closing;
                             break;
                         }
-                        Console.WriteLine("Sending confirmation code...");
                         Send(clientId, new Dictionary<string, object>
                         {
                             ["@type"] = "checkAuthenticationCode",
@@ -266,34 +233,14 @@ internal static class Program
                     case "authorizationStateReady":
                         if (state == State.Init)
                         {
-                            Console.WriteLine("SUCCESS: account is authorized.");
-                            Console.WriteLine("Uploading test file to chat " + TargetChatId + "...");
-                            
+                            Console.WriteLine("Authorized. Fetching chat info...");
                             Send(clientId, new Dictionary<string, object>
                             {
-                                ["@type"] = "sendMessage",
-                                ["@extra"] = "send_msg",
-                                ["chat_id"] = TargetChatId,
-                                ["input_message_content"] = new Dictionary<string, object>
-{
-    ["@type"] = "inputMessageDocument",
-    ["document"] = new Dictionary<string, object>
-    {
-        ["@type"] = "inputDocument",
-        ["document"] = new Dictionary<string, object>
-        {
-            ["@type"] = "inputFileLocal",
-            ["path"] = testFilePath
-        }
-    },
-    ["caption"] = new Dictionary<string, object>
-    {
-        ["@type"] = "formattedText",
-        ["text"] = "smoke test upload"
-    }
-}
+                                ["@type"] = "getChat",
+                                ["@extra"] = "get_chat",
+                                ["chat_id"] = TargetChatId
                             });
-                            state = State.WaitingSendResult;
+                            state = State.WaitingChat;
                         }
                         break;
 
@@ -302,49 +249,45 @@ internal static class Program
                         break;
 
                     case "authorizationStateClosed":
-                        Console.WriteLine("TDLib closed cleanly. Exit code " + exitCode + ".");
+                        Console.WriteLine("TDLib closed. Exit code " + exitCode + ".");
                         return exitCode;
                 }
                 continue;
             }
 
-            if (extra == "send_msg")
+            if (extra == "get_chat" && state == State.WaitingChat)
             {
-                if (kind == "message")
+                if (kind == "chat")
                 {
-                    Console.WriteLine("Message sent successfully. Extracting file_id...");
-                    var content = root.GetProperty("content");
-                    var contentType = content.GetProperty("@type").GetString();
-                    if (contentType != "messageDocument")
+                    var title = root.GetProperty("title").GetString();
+                    var type = root.GetProperty("type");
+                    var chatType = type.GetProperty("@type").GetString();
+                    Console.WriteLine("Chat title: " + title);
+                    Console.WriteLine("Chat type: " + chatType);
+
+                    if (chatType != "chatTypeSupergroup")
                     {
-                        Console.WriteLine("FAIL: unexpected content type: " + contentType);
+                        Console.WriteLine("FAIL: target chat is not a supergroup/channel.");
                         exitCode = 4;
                         Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
                         state = State.Closing;
                         continue;
                     }
-                    
-                    var document = content.GetProperty("document");
-                    var fileObj = document.GetProperty("document");
-                    var fileId = fileObj.GetProperty("id").GetInt32();
-                    Console.WriteLine("Extracted file_id: " + fileId);
-                    
-                    Console.WriteLine("Downloading file synchronously...");
+
+                    supergroupId = type.GetProperty("supergroup_id").GetInt64();
+                    Console.WriteLine("supergroup_id: " + supergroupId);
+
                     Send(clientId, new Dictionary<string, object>
                     {
-                        ["@type"] = "downloadFile",
-                        ["@extra"] = "download_file",
-                        ["file_id"] = fileId,
-                        ["priority"] = 1,
-                        ["offset"] = 0,
-                        ["limit"] = 0,
-                        ["synchronous"] = true
+                        ["@type"] = "getSupergroup",
+                        ["@extra"] = "get_supergroup",
+                        ["supergroup_id"] = supergroupId
                     });
-                    state = State.WaitingDownloadResult;
+                    state = State.WaitingSupergroup;
                 }
                 else
                 {
-                    Console.WriteLine("FAIL: unexpected response to sendMessage: " + kind);
+                    Console.WriteLine("FAIL: unexpected response to getChat: " + kind);
                     exitCode = 5;
                     Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
                     state = State.Closing;
@@ -352,54 +295,116 @@ internal static class Program
                 continue;
             }
 
-            if (extra == "download_file")
+            if (extra == "get_supergroup" && state == State.WaitingSupergroup)
             {
-                if (kind == "file")
+                if (kind == "supergroup")
                 {
-                    var local = root.GetProperty("local");
-                    var isCompleted = local.GetProperty("is_downloading_completed").GetBoolean();
-                    if (!isCompleted)
+                    var hasUsername = false;
+                    if (root.TryGetProperty("usernames", out var usernamesObj))
                     {
-                        Console.WriteLine("FAIL: download not completed.");
-                        exitCode = 6;
-                        Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
-                        state = State.Closing;
-                        continue;
+                        if (usernamesObj.TryGetProperty("active_usernames", out var activeArr) && activeArr.ValueKind == JsonValueKind.Array)
+                        {
+                            var list = new List<string>();
+                            foreach (var u in activeArr.EnumerateArray())
+                                list.Add(u.GetString() ?? "");
+                            supergroupUsernames = string.Join(",", list);
+                            hasUsername = list.Count > 0;
+                        }
                     }
-                    
-                    var downloadedPath = local.GetProperty("path").GetString();
-                    Console.WriteLine("Downloaded to: " + downloadedPath);
-                    
-                    if (!File.Exists(downloadedPath))
+                    else if (root.TryGetProperty("username", out var usernameProp))
                     {
-                        Console.WriteLine("FAIL: downloaded file not found on disk.");
-                        exitCode = 7;
-                        Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
-                        state = State.Closing;
-                        continue;
+                        var u = usernameProp.GetString();
+                        if (!string.IsNullOrEmpty(u))
+                        {
+                            supergroupUsernames = u;
+                            hasUsername = true;
+                        }
                     }
-                    
-                    var downloadedHash = ComputeSha256(downloadedPath);
-                    Console.WriteLine("Downloaded SHA256: " + downloadedHash);
-                    
-                    if (originalHash == downloadedHash)
+
+                    Console.WriteLine("Public username(s): " + (supergroupUsernames ?? "(none)") + (hasUsername ? " [PUBLIC]" : " [PRIVATE]"));
+
+                    var statusObj = root.GetProperty("status");
+                    var statusType = statusObj.GetProperty("@type").GetString();
+                    supergroupStatus = statusType;
+                    Console.WriteLine("Member status: " + statusType);
+
+                    if (statusType == "chatMemberStatusAdministrator")
                     {
-                        Console.WriteLine("SUCCESS: file hashes match!");
+                        canPost = statusObj.GetProperty("can_post_messages").GetBoolean();
+                        canEdit = statusObj.GetProperty("can_edit_messages").GetBoolean();
+                        canDelete = statusObj.GetProperty("can_delete_messages").GetBoolean();
+                        Console.WriteLine("Admin rights: post=" + canPost + ", edit=" + canEdit + ", delete=" + canDelete);
+                    }
+                    else if (statusType == "chatMemberStatusCreator")
+                    {
+                        Console.WriteLine("Creator: full rights.");
+                    }
+                    else
+                    {
+                        Console.WriteLine("WARNING: not creator/admin, may lack permissions.");
+                    }
+
+                    Send(clientId, new Dictionary<string, object>
+                    {
+                        ["@type"] = "getSupergroupFullInfo",
+                        ["@extra"] = "get_full_info",
+                        ["supergroup_id"] = supergroupId
+                    });
+                    state = State.WaitingFullInfo;
+                }
+                else
+                {
+                    Console.WriteLine("FAIL: unexpected response to getSupergroup: " + kind);
+                    exitCode = 6;
+                    Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
+                    state = State.Closing;
+                }
+                continue;
+            }
+
+            if (extra == "get_full_info" && state == State.WaitingFullInfo)
+            {
+                if (kind == "supergroupFullInfo")
+                {
+                    var memberCount = root.GetProperty("member_count").GetInt32();
+                    Console.WriteLine("member_count: " + memberCount);
+
+                    if (memberCount > 1)
+                    {
+                        Console.WriteLine("R2 WARNING: member_count > 1. Needs confirmation.");
+                    }
+                    else
+                    {
+                        Console.WriteLine("R2 OK: member_count <= 1.");
+                    }
+
+                    var isPrivate = string.IsNullOrEmpty(supergroupUsernames);
+                    var hasRights = supergroupStatus == "chatMemberStatusCreator" ||
+                                    (canPost == true && canEdit == true && canDelete == true);
+
+                    Console.WriteLine("=== R2 SUMMARY ===");
+                    Console.WriteLine("Private (no username): " + isPrivate);
+                    Console.WriteLine("Has admin rights: " + hasRights);
+                    Console.WriteLine("Member count <= 1: " + (memberCount <= 1));
+
+                    if (isPrivate && hasRights && memberCount <= 1)
+                    {
+                        Console.WriteLine("R2 CHECK PASSED.");
                         exitCode = 0;
                     }
                     else
                     {
-                        Console.WriteLine("FAIL: file hashes DO NOT match.");
-                        exitCode = 8;
+                        Console.WriteLine("R2 CHECK FAILED OR NEEDS ATTENTION.");
+                        exitCode = 7;
                     }
-                    
+
                     Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
                     state = State.Closing;
                 }
                 else
                 {
-                    Console.WriteLine("FAIL: unexpected response to downloadFile: " + kind);
-                    exitCode = 9;
+                    Console.WriteLine("FAIL: unexpected response to getSupergroupFullInfo: " + kind);
+                    exitCode = 8;
                     Send(clientId, new Dictionary<string, object> { ["@type"] = "close" });
                     state = State.Closing;
                 }
