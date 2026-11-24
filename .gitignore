@@ -1,8 +1,8 @@
 bin/
 obj/
-data/
 publish/
 *.dll
 *.user
 .vs/
-input.txtdata/
+input.txt
+data/
