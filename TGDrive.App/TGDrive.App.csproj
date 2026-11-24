@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\TGDrive.Core\TGDrive.Core.csproj" />
+    <ProjectReference Include="..\TGDrive.Storage\TGDrive.Storage.csproj" />
+    <ProjectReference Include="..\TGDrive.Telegram\TGDrive.Telegram.csproj" />
+  </ItemGroup>
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+</Project>
