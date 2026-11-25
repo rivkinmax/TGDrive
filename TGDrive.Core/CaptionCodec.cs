@@ -1,22 +1,35 @@
-using System;
+﻿using System;
 using System.Text;
 using System.Text.Json;
 
 namespace TGDrive.Core;
 
+/// <summary>
+/// File version metadata. Three identifiers per REQUIREMENTS section 10:
+/// FileId (f) = stable file identity, survives renames;
+/// VersionId (i) = identity of this specific version;
+/// ParentVersionId (p) = previous version id (empty for root).
+/// </summary>
 public sealed record FileMetadata(
-    string VersionId,      // vid: base64url GUID (22 chars)
-    string ParentVersionId, // pvid: base64url GUID or null for root
-    string Sha256Hex,      // h: lowercase hex SHA256
-    long Size,             // s: file size in bytes
-    long MtimeUnix,        // m: modification time (Unix seconds)
-    string DeviceId        // d: device identifier
+    string FileId,
+    string VersionId,
+    string ParentVersionId,
+    string Sha256Hex,
+    long Size,
+    long MtimeUnix,
+    string DeviceId
+);
+
+public sealed record ServiceRecord(
+    string Type,       // "d", "x", "r", "s"
+    string Path,
+    JsonElement Metadata
 );
 
 public static class CaptionCodec
 {
     public const int MaxCaptionUtf16Length = 1024;
-    private const string Prefix = "#tgdrive1 ";
+    public const string Prefix = "#tgdrive1 ";
 
     public static string GenerateNewId()
     {
@@ -32,8 +45,9 @@ public static class CaptionCodec
         {
             v = 1,
             t = "f",
-            f = meta.VersionId,
-            i = meta.ParentVersionId,
+            f = meta.FileId,
+            i = meta.VersionId,
+            p = meta.ParentVersionId,
             h = meta.Sha256Hex,
             s = meta.Size,
             m = meta.MtimeUnix,
@@ -75,15 +89,53 @@ public static class CaptionCodec
         if (type != "f")
             throw new FormatException("Expected type 'f' (file), got: " + type);
 
-        var vid = root.GetProperty("f").GetString() ?? throw new FormatException("Missing 'f' (versionId).");
-        var pvid = root.GetProperty("i").GetString();
+        var fid = root.GetProperty("f").GetString() ?? throw new FormatException("Missing 'f' (fileId).");
+        var vid = root.GetProperty("i").GetString() ?? throw new FormatException("Missing 'i' (versionId).");
+        var pvid = root.TryGetProperty("p", out var pEl) && pEl.ValueKind == JsonValueKind.String
+            ? pEl.GetString() ?? ""
+            : "";
         var hash = root.GetProperty("h").GetString() ?? throw new FormatException("Missing 'h' (sha256).");
         var size = root.GetProperty("s").GetInt64();
         var mtime = root.GetProperty("m").GetInt64();
         var dev = root.GetProperty("d").GetString() ?? throw new FormatException("Missing 'd' (deviceId).");
 
-        var meta = new FileMetadata(vid, pvid ?? "", hash, size, mtime, dev);
+        var meta = new FileMetadata(fid, vid, pvid, hash, size, mtime, dev);
         return (path, meta);
+    }
+
+    /// <summary>
+    /// Try to parse a service record (folder/tombstone/rebind/bind-marker).
+    /// Input is the full message text: "#tgdrive1 {json}". Path is in field "p".
+    /// Returns null if not a valid service record.
+    /// </summary>
+    public static ServiceRecord? TryDecodeServiceRecord(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var trimmed = text.Trim();
+        if (!trimmed.StartsWith(Prefix)) return null;
+
+        var jsonStr = trimmed.Substring(Prefix.Length);
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonStr);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("v", out var vEl) || vEl.ValueKind != JsonValueKind.Number) return null;
+            if (vEl.GetInt32() != 1) return null;
+
+            if (!root.TryGetProperty("t", out var tEl) || tEl.ValueKind != JsonValueKind.String) return null;
+            var type = tEl.GetString() ?? "";
+            if (type != "d" && type != "x" && type != "r" && type != "s") return null;
+
+            if (!root.TryGetProperty("p", out var pEl) || pEl.ValueKind != JsonValueKind.String) return null;
+            var path = pEl.GetString() ?? "";
+
+            return new ServiceRecord(type, path, root.Clone());
+        }
+        catch
+        {
+            return null;
+        }
     }
 }
 
