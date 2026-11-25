@@ -1,3 +1,3 @@
-﻿git add -A
-git commit -m "chore: remove template stubs, add minimal App entry point, verify .gitignore"
+git add -A
+git commit -m "feat(Storage): add basic SQLite Db class with schema initialization and xUnit tests"
 git push origin main
