@@ -39,6 +39,10 @@ public sealed class TdGateway : IAsyncDisposable
     public event Action<string, JsonElement>? UpdateReceived;
     public event Action<string, JsonElement>? ResponseReceived;
 
+    private volatile bool _debugOutput;
+    // Optional debug console output; default off. RAW lines may contain sensitive data.
+    public bool DebugOutput { get => _debugOutput; set => _debugOutput = value; }
+
     public TdGateway()
     {
         td_set_log_verbosity_level(0);
@@ -66,7 +70,7 @@ public sealed class TdGateway : IAsyncDisposable
         _receiveLoopTask = Task.Run(() => ReceiveLoopAsync(_loopCts.Token));
 
         // Send parameters immediately; TDLib accepts them before any update is emitted
-        Console.WriteLine("[DBG] Sending setTdlibParameters...");
+        if (DebugOutput) Console.WriteLine("[DBG] Sending setTdlibParameters...");
         var paramsResp = await SendRequestAsync(new Dictionary<string, object>
         {
             ["@type"] = "setTdlibParameters",
@@ -87,7 +91,7 @@ public sealed class TdGateway : IAsyncDisposable
         }, TimeSpan.FromSeconds(30));
 
         var ptype = paramsResp.GetProperty("@type").GetString();
-        Console.WriteLine($"[DBG] setTdlibParameters response: {ptype}");
+        if (DebugOutput) Console.WriteLine($"[DBG] setTdlibParameters response: {ptype}");
         if (ptype == "error")
         {
             var msg = paramsResp.GetProperty("message").GetString();
@@ -188,7 +192,7 @@ public sealed class TdGateway : IAsyncDisposable
             var raw = Marshal.PtrToStringUTF8(ptr);
             if (string.IsNullOrEmpty(raw)) continue;
 
-            Console.WriteLine($"[DBG] RAW: {(raw.Length > 120 ? raw.Substring(0, 120) + "..." : raw)}");
+            if (DebugOutput) Console.WriteLine($"[DBG] RAW: {(raw.Length > 120 ? raw.Substring(0, 120) + "..." : raw)}");
 
             JsonDocument doc;
             try { doc = JsonDocument.Parse(raw); }
@@ -206,7 +210,7 @@ public sealed class TdGateway : IAsyncDisposable
                     if (!string.IsNullOrEmpty(state))
                     {
                         _lastAuthState = state;
-                        Console.WriteLine($"[DBG] AuthState: {state}");
+                        if (DebugOutput) Console.WriteLine($"[DBG] AuthState: {state}");
                         AuthStateChanged?.Invoke(state);
                     }
                     continue;
