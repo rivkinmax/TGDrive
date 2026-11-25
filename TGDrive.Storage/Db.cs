@@ -67,10 +67,17 @@ public sealed class Db : IDisposable
         ");
     }
 
-    public void Execute(string sql)
+    public void Execute(string sql, Dictionary<string, object>? parameters = null)
     {
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = sql;
+        if (parameters != null)
+        {
+            foreach (var p in parameters)
+            {
+                cmd.Parameters.AddWithValue(p.Key, p.Value ?? DBNull.Value);
+            }
+        }
         cmd.ExecuteNonQuery();
     }
 
