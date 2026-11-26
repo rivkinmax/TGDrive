@@ -24,28 +24,31 @@ public sealed class Ingestor
         _store = store ?? throw new ArgumentNullException(nameof(store));
     }
 
-    /// <summary>
-    /// Идемпотентная свёртка одной записи.
-    /// При сбое БД исключение пробрасывается наружу (fail-fast), чтобы избежать молчаливой потери данных (требование 17).
-    /// </summary>
     public async Task<IngestResult> ApplyAsync(ChannelRecord record, CancellationToken ct = default)
     {
-        if (record == null) return IngestResult.Ignored;
-        if (string.IsNullOrEmpty(record.RecordType)) return IngestResult.Ignored;
+        if (record == null || string.IsNullOrEmpty(record.RecordType)) 
+            return IngestResult.Ignored;
+
+        if (record.RecordType == "f" && record.FileMeta != null)
+        {
+            var currentVid = await _store.GetCurrentVersionIdAsync(record.FileMeta.FileId, ct).ConfigureAwait(false);
+            
+            if (currentVid == record.FileMeta.VersionId)
+                return IngestResult.Duplicate;
+            
+            if (currentVid != null && currentVid != record.FileMeta.ParentVersionId)
+                return IngestResult.Conflict;
+        }
 
         bool isNew = await _store.SaveRemoteMessageAsync(record, ct).ConfigureAwait(false);
         return isNew ? IngestResult.Applied : IngestResult.Duplicate;
     }
 
-    /// <summary>
-    /// Пакетная свёртка. Сортирует записи по MessageId ASC для корректного построения цепочек версий.
-    /// </summary>
     public async Task<IngestSummary> ApplyBatchAsync(IReadOnlyList<ChannelRecord> records, CancellationToken ct = default)
     {
         int applied = 0, duplicate = 0, conflicts = 0, ignored = 0;
         long lastMessageId = 0;
 
-        // Хронологический порядок критичен для будущей валидации parent_version_id
         var sortedRecords = records.OrderBy(r => r.MessageId).ToList();
 
         foreach (var record in sortedRecords)

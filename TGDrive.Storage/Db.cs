@@ -77,19 +77,15 @@ public sealed class Db : IDisposable
 
     private void MigrateSchema()
     {
-        // Безопасное добавление колонок, если их нет (SQLite бросает исключение, если колонка существует)
         var columnsToAdd = new[] { "file_id TEXT", "path_lower TEXT", "td_file_id INTEGER" };
         foreach (var col in columnsToAdd)
         {
-            try
-            {
-                Execute($"ALTER TABLE messages ADD COLUMN {col};");
-            }
-            catch (SqliteException)
-            {
-                // Колонка уже существует, игнорируем
-            }
+            try { Execute($"ALTER TABLE messages ADD COLUMN {col};"); }
+            catch (SqliteException) { }
         }
+        
+        try { Execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_version ON messages(version_id) WHERE version_id != '';"); }
+        catch (SqliteException) { }
     }
 
     public void Execute(string sql, Dictionary<string, object>? parameters = null)
@@ -135,6 +131,15 @@ public sealed class Db : IDisposable
         cmd.Parameters.AddWithValue("@key", key);
         cmd.Parameters.AddWithValue("@value", value);
         cmd.ExecuteNonQuery();
+    }
+
+    public async Task<string?> GetCurrentVersionIdAsync(string fileId, CancellationToken ct = default)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT version_id FROM messages WHERE file_id = @file_id AND type = 'f' ORDER BY message_id DESC LIMIT 1;";
+        cmd.Parameters.AddWithValue("@file_id", fileId);
+        var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result == DBNull.Value ? null : result as string;
     }
 
     public void Dispose()

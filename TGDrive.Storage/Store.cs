@@ -67,6 +67,11 @@ public sealed class Store : IStore
         return rowsAffected > 0;
     }
 
+    public async Task<string?> GetCurrentVersionIdAsync(string fileId, CancellationToken ct = default)
+    {
+        return await _db.GetCurrentVersionIdAsync(fileId, ct).ConfigureAwait(false);
+    }
+
     public async Task EnqueueAsync(string versionId, string path, string type, CancellationToken ct = default)
     {
         const string sql = @"
