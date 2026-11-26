@@ -89,7 +89,7 @@ public class ChannelScanner
                     docEl.TryGetProperty("document", out var innerDoc) &&
                     innerDoc.TryGetProperty("id", out var fidEl))
                 {
-                    tdFileId = fidEl.GetInt32();
+                    tdFileId = (int)fidEl.GetInt64();
                 }
 
                 var lines = text.Split('\n');
@@ -135,19 +135,4 @@ public class ChannelScanner
 
         return null;
     }
-}
-
-/// <summary>
-/// A record parsed from a channel message.
-/// RecordType: "f" (file), "d" (folder), "x" (tombstone), "r" (rebind), "s" (bind marker).
-/// FileMeta is set for files; TdFileId is TDLib's internal file id used for downloadFile.
-/// </summary>
-public class ChannelRecord
-{
-    public long MessageId { get; set; }
-    public string RecordType { get; set; } = "";
-    public string Path { get; set; } = "";
-    public FileMetadata? FileMeta { get; set; }
-    public int? TdFileId { get; set; }
-    public JsonElement RawJson { get; set; }
 }

@@ -1,57 +1,86 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using TGDrive.Core;
 
 namespace TGDrive.Storage;
 
-public sealed class Store : IDisposable
+public sealed class Store : IStore
 {
     private readonly Db _db;
-    private bool _disposed;
 
-    public Store(string dbPath)
+    public Store(Db db)
     {
-        _db = new Db(dbPath);
+        _db = db ?? throw new ArgumentNullException(nameof(db));
     }
 
-    public void SaveMessage(long messageId, string versionId, string path, string type, 
-        string? parentVersionId, string? sha256, long? size, long? mtime, string? deviceId)
+    public async Task<bool> SaveRemoteMessageAsync(ChannelRecord record, CancellationToken ct = default)
     {
-        _db.Execute(@"
-            INSERT OR REPLACE INTO messages 
-            (message_id, version_id, path, type, parent_version_id, sha256, size, mtime, device_id, applied)
-            VALUES (@message_id, @version_id, @path, @type, @parent_version_id, @sha256, @size, @mtime, @device_id, 0);",
-            new Dictionary<string, object>
-            {
-                ["@message_id"] = messageId,
-                ["@version_id"] = versionId,
-                ["@path"] = path,
-                ["@type"] = type,
-                ["@parent_version_id"] = parentVersionId ?? (object)DBNull.Value,
-                ["@sha256"] = sha256 ?? (object)DBNull.Value,
-                ["@size"] = size ?? (object)DBNull.Value,
-                ["@mtime"] = mtime ?? (object)DBNull.Value,
-                ["@device_id"] = deviceId ?? (object)DBNull.Value
-            });
+        if (record == null) throw new ArgumentNullException(nameof(record));
+
+        string pathLower = record.Path.ToLowerInvariant();
+        long? tdFileId = record.TdFileId;
+        
+        string? fileId = null;
+        string? versionId = null;
+        string? parentVersionId = null;
+        string? sha256 = null;
+        long? size = null;
+        long? mtime = null;
+        string? deviceId = null;
+
+        if (record.FileMeta != null)
+        {
+            fileId = record.FileMeta.FileId;
+            versionId = record.FileMeta.VersionId;
+            parentVersionId = record.FileMeta.ParentVersionId;
+            sha256 = record.FileMeta.Sha256Hex;
+            size = record.FileMeta.Size;
+            mtime = record.FileMeta.MtimeUnix;
+            deviceId = record.FileMeta.DeviceId;
+        }
+
+        const string sql = @"
+            INSERT OR IGNORE INTO messages 
+            (message_id, version_id, file_id, path, path_lower, type, parent_version_id, sha256, size, mtime, device_id, td_file_id, applied)
+            VALUES 
+            (@message_id, @version_id, @file_id, @path, @path_lower, @type, @parent_version_id, @sha256, @size, @mtime, @device_id, @td_file_id, 0);";
+
+        var parameters = new Dictionary<string, object>
+        {
+            ["@message_id"] = record.MessageId,
+            ["@version_id"] = versionId ?? "",
+            ["@file_id"] = fileId ?? "",
+            ["@path"] = record.Path,
+            ["@path_lower"] = pathLower,
+            ["@type"] = record.RecordType,
+            ["@parent_version_id"] = parentVersionId ?? "",
+            ["@sha256"] = sha256 ?? "",
+            ["@size"] = size ?? 0,
+            ["@mtime"] = mtime ?? 0,
+            ["@device_id"] = deviceId ?? "",
+            ["@td_file_id"] = tdFileId ?? 0
+        };
+
+        int rowsAffected = await _db.ExecuteAsync(sql, parameters, ct).ConfigureAwait(false);
+        return rowsAffected > 0;
     }
 
-    public void Enqueue(string versionId, string path, string type)
+    public async Task EnqueueAsync(string versionId, string path, string type, CancellationToken ct = default)
     {
-        _db.Execute(@"
+        const string sql = @"
             INSERT INTO queue (version_id, path, type, status, created_at)
-            VALUES (@version_id, @path, @type, 'pending', @created_at);",
-            new Dictionary<string, object>
-            {
-                ["@version_id"] = versionId,
-                ["@path"] = path,
-                ["@type"] = type,
-                ["@created_at"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-            });
-    }
+            VALUES (@version_id, @path, @type, 'pending', @created_at);";
+        
+        var parameters = new Dictionary<string, object>
+        {
+            ["@version_id"] = versionId,
+            ["@path"] = path,
+            ["@type"] = type,
+            ["@created_at"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        };
 
-    public void Dispose()
-    {
-        if (_disposed) return;
-        _db.Dispose();
-        _disposed = true;
+        await _db.ExecuteAsync(sql, parameters, ct).ConfigureAwait(false);
     }
 }

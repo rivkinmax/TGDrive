@@ -1,5 +1,8 @@
-using System;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 
 namespace TGDrive.Storage;
@@ -25,6 +28,7 @@ public sealed class Db : IDisposable
         Execute("PRAGMA foreign_keys=ON;");
 
         InitializeSchema();
+        MigrateSchema();
     }
 
     private void InitializeSchema()
@@ -43,18 +47,22 @@ public sealed class Db : IDisposable
             CREATE TABLE IF NOT EXISTS messages (
                 message_id INTEGER PRIMARY KEY,
                 version_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
                 path TEXT NOT NULL,
+                path_lower TEXT NOT NULL,
                 type TEXT NOT NULL,
                 parent_version_id TEXT,
                 sha256 TEXT,
                 size INTEGER,
                 mtime INTEGER,
                 device_id TEXT,
+                td_file_id INTEGER,
                 applied INTEGER DEFAULT 0
             );
 
-            CREATE INDEX IF NOT EXISTS idx_messages_path ON messages(path);
+            CREATE INDEX IF NOT EXISTS idx_messages_path_lower ON messages(path_lower);
             CREATE INDEX IF NOT EXISTS idx_messages_version ON messages(version_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_file ON messages(file_id);
 
             CREATE TABLE IF NOT EXISTS queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +73,23 @@ public sealed class Db : IDisposable
                 created_at INTEGER NOT NULL
             );
         ");
+    }
+
+    private void MigrateSchema()
+    {
+        // Безопасное добавление колонок, если их нет (SQLite бросает исключение, если колонка существует)
+        var columnsToAdd = new[] { "file_id TEXT", "path_lower TEXT", "td_file_id INTEGER" };
+        foreach (var col in columnsToAdd)
+        {
+            try
+            {
+                Execute($"ALTER TABLE messages ADD COLUMN {col};");
+            }
+            catch (SqliteException)
+            {
+                // Колонка уже существует, игнорируем
+            }
+        }
     }
 
     public void Execute(string sql, Dictionary<string, object>? parameters = null)
@@ -79,6 +104,20 @@ public sealed class Db : IDisposable
             }
         }
         cmd.ExecuteNonQuery();
+    }
+
+    public async Task<int> ExecuteAsync(string sql, Dictionary<string, object>? parameters = null, CancellationToken ct = default)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = sql;
+        if (parameters != null)
+        {
+            foreach (var p in parameters)
+            {
+                cmd.Parameters.AddWithValue(p.Key, p.Value ?? DBNull.Value);
+            }
+        }
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     public string? GetMeta(string key)
