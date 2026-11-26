@@ -88,4 +88,47 @@ public sealed class Store : IStore
 
         await _db.ExecuteAsync(sql, parameters, ct).ConfigureAwait(false);
     }
+    // === Local state ===
+
+    public async Task UpsertLocalAsync(string path, string? fileId, string? sha256, long? size, long? mtime, bool isFolder, CancellationToken ct = default)
+    {
+        await _db.UpsertLocalAsync(path, fileId, sha256, size, mtime, isFolder, ct).ConfigureAwait(false);
+    }
+
+    public async Task<(string? FileId, string? Sha256, long? Size, long? Mtime, bool IsFolder)?> GetLocalAsync(string path, CancellationToken ct = default)
+    {
+        return await _db.GetLocalAsync(path, ct).ConfigureAwait(false);
+    }
+
+    public async Task DeleteLocalAsync(string path, CancellationToken ct = default)
+    {
+        await _db.DeleteLocalAsync(path, ct).ConfigureAwait(false);
+    }
+
+    public async Task<List<(string Path, string? FileId, string? Sha256, long? Size, long? Mtime, bool IsFolder)>> GetAllLocalAsync(CancellationToken ct = default)
+    {
+        return await _db.GetAllLocalAsync(ct).ConfigureAwait(false);
+    }
+
+    // === Base snapshot ===
+
+    public async Task UpsertBaseAsync(string path, string? fileId, string? versionId, string? sha256, long? size, long? mtime, bool isFolder, CancellationToken ct = default)
+    {
+        await _db.UpsertBaseAsync(path, fileId, versionId, sha256, size, mtime, isFolder, ct).ConfigureAwait(false);
+    }
+
+    public async Task<(string? FileId, string? VersionId, string? Sha256, long? Size, long? Mtime, bool IsFolder)?> GetBaseAsync(string path, CancellationToken ct = default)
+    {
+        return await _db.GetBaseAsync(path, ct).ConfigureAwait(false);
+    }
+
+    public async Task DeleteBaseAsync(string path, CancellationToken ct = default)
+    {
+        await _db.DeleteBaseAsync(path, ct).ConfigureAwait(false);
+    }
+
+    public async Task<List<(string Path, string? FileId, string? VersionId, string? Sha256, long? Size, long? Mtime, bool IsFolder)>> GetAllBaseAsync(CancellationToken ct = default)
+    {
+        return await _db.GetAllBaseAsync(ct).ConfigureAwait(false);
+    }
 }
